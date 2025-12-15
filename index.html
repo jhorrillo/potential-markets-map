@@ -302,13 +302,17 @@
             console.error('Error loading tiles:', error);
         });
         
+        // Create a custom pane for labels to ensure they're on top
+        map.createPane('labels');
+        map.getPane('labels').style.zIndex = 650;  // Above overlays (default 400) but below popups (default 700)
+        map.getPane('labels').style.pointerEvents = 'none';  // Labels don't block clicks
+
         // Add label layer on top
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
             attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a>',
             subdomains: 'abcd',
             maxZoom: 20,
-            opacity: 1,
-            zIndex: 1000
+            pane: 'labels'  // Put in the labels pane
         }).addTo(map);
         
         // Add legend
