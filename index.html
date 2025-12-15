@@ -304,7 +304,7 @@
         
         // Create a custom pane for labels to ensure they're on top
         map.createPane('labels');
-        map.getPane('labels').style.zIndex = 650;  // Above overlays (default 400) but below popups (default 700)
+        map.getPane('labels').style.zIndex = 625;  // Above overlays (default 400) but below popups (default 650)
         map.getPane('labels').style.pointerEvents = 'none';  // Labels don't block clicks
 
         // Add label layer on top
