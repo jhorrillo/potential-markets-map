@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Potential Markets - Old World</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            font-family: Arial, sans-serif; 
+        }
+        #map { 
+            position: absolute; 
+            top: 0; 
+            bottom: 0; 
+            width: 100%; 
+        }
+        #loading {
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%);
+            background: white; 
+            padding: 20px; 
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3); 
+            z-index: 1000;
+            text-align: center;
+            min-width: 250px;
+        }
+        #loading-bar {
+            width: 200px;
+            height: 20px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        #loading-progress {
+            height: 100%;
+            background: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .hidden { 
+            display: none; 
+        }
+        .custom-tooltip {
+            background-color: rgba(255, 255, 255, 0.3) !important;
+            border: 1px solid rgba(0, 0, 0, 0.3) !important;
+            font-size: 13px; 
+            padding: 3px 8px;
+        }
+        .info.legend {
+            background: white;
+            padding: 10px;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+        }
+        .info.legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div><strong>Loading market data...</strong></div>
+        <div id="loading-bar">
+            <div id="loading-progress"></div>
+        </div>
+        <div id="loading-text">Initializing...</div>
+    </div>
+    <div id="map"></div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script>
+        // Initialize map - centered on Old World
+        var map = L.map('map', { 
+            preferCanvas: true,
+            zoomControl: true
+        }).setView([40, 20], 4);
+        
+        // Add base layer (no labels)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20
+        }).addTo(map);
+        
+        // Viridis color scale for percentiles
+        function getColor(percentile) {
+            if (percentile == null || isNaN(percentile)) return 'transparent';
+            
+            var colors = [
+                [68, 1, 84],      // 0%
+                [59, 82, 139],    // 25%
+                [33, 145, 140],   // 50%
+                [94, 201, 98],    // 75%
+                [253, 231, 37]    // 100%
+            ];
+            
+            var idx = Math.min(Math.floor(percentile / 25), 3);
+            var t = (percentile % 25) / 25;
+            var c1 = colors[idx];
+            var c2 = colors[idx + 1];
+            
+            var r = Math.round(c1[0] + t * (c2[0] - c1[0]));
+            var g = Math.round(c1[1] + t * (c2[1] - c1[1]));
+            var b = Math.round(c1[2] + t * (c2[2] - c1[2]));
+            
+            return 'rgb(' + r + ',' + g + ',' + b + ')';
+        }
+        
+        // Default polygon style
+        function style(feature) {
+            return {
+                fillColor: getColor(feature.properties.pct_kcal),
+                fillOpacity: 0.6,
+                color: '#666666',
+                weight: 0.5,
+                opacity: 0.7
+            };
+        }
+        
+	// Highlight on hover
+        function highlightFeature(e) {
+            var layer = e.target;
+            layer.setStyle({
+                weight: 2,
+                color: '#FFFFFF',
+                fillOpacity: 0.9
+            });
+            layer.bringToFront();
+        }
+        
+        // Reset on mouseout
+        function resetHighlight(e) {
+            var layer = e.target;
+            layer.setStyle({
+                weight: 0.5,
+                opacity: 0.7,
+                color: '#666666',
+                fillOpacity: 0.6
+            });
+            layer.bringToBack();
+        }
+        
+        // Create popup content
+        function createPopup(props) {
+            return '<strong>GRID ID: ' + props.market_grid_id + '</strong><br/>' +
+                   '<strong>Market Shape Area</strong><br/>' +
+                   '  Percentile: ' + (props.pct_area ? props.pct_area.toFixed(1) : 'N/A') + '<br/>' +
+                   '<strong>Market Kcal Density</strong><br/>' +
+                   '  Percentile: ' + (props.pct_kcal ? props.pct_kcal.toFixed(1) : 'N/A') + '<br/>' +
+                   '<strong>Market Harbors</strong><br/>' +
+                   '  Value: ' + (props.market_harbors || 'N/A') + '<br/>' +
+                   '  Percentile: ' + (props.pct_harbors ? props.pct_harbors.toFixed(1) : 'N/A') + '<br/>' +
+                   '<strong>Market Population (1800)</strong><br/>' +
+                   '  Value: ' + (props.market_population ? props.market_population.toLocaleString() : 'N/A') + '<br/>' +
+                   '  Percentile: ' + (props.pct_population ? props.pct_population.toFixed(1) : 'N/A');
+        }
+        
+        // Bind events to features
+        function onEachFeature(feature, layer) {
+            layer.on({
+                mouseover: highlightFeature,
+                mouseout: resetHighlight
+            });
+            
+            layer.bindTooltip(createPopup(feature.properties), {
+                direction: 'bottom',
+                offset: [-15, 35],
+                opacity: 1,
+                className: 'custom-tooltip'
+            });
+        }
+        
+        // List of tile files (9 tiles in 3x3 grid)
+        var files = [
+            'markets_southwest.geojson',
+            'markets_south.geojson',
+            'markets_southeast.geojson',
+            'markets_west.geojson',
+            'markets_central.geojson',
+            'markets_east.geojson',
+            'markets_northwest.geojson',
+            'markets_north.geojson',
+            'markets_northeast.geojson'
+        ];
+        
+        var loaded = 0;
+        var totalFiles = files.length;
+        var totalFeatures = 0;
+        
+        // Update loading display
+        document.getElementById('loading-text').textContent = 'Loading tile 0/' + totalFiles;
+        
+        // Load all tiles
+        Promise.all(files.map(file => 
+            fetch(file)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to load ' + file + ' (status: ' + response.status + ')');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    loaded++;
+                    var percentComplete = (loaded / totalFiles) * 100;
+                    document.getElementById('loading-progress').style.width = percentComplete + '%';
+                    document.getElementById('loading-text').textContent = 
+                        'Loading tile ' + loaded + '/' + totalFiles;
+                    return data;
+                })
+                .catch(error => {
+                    console.warn('Could not load ' + file + ':', error.message);
+                    return null; // Return null for missing files
+                })
+        ))
+        .then(datasets => {
+            // Hide loading message
+            document.getElementById('loading').classList.add('hidden');
+            
+            // Filter out null datasets (missing files)
+            var validDatasets = datasets.filter(d => d !== null);
+            
+            if (validDatasets.length === 0) {
+                alert('Error: No data files could be loaded. Please check the console for details.');
+                return;
+            }
+            
+            // Add all datasets to map
+            validDatasets.forEach(data => {
+                if (data && data.features) {
+                    totalFeatures += data.features.length;
+                    L.geoJSON(data, {
+                        style: style,
+                        onEachFeature: onEachFeature
+                    }).addTo(map);
+                }
+            });
+            
+            console.log('Successfully loaded ' + validDatasets.length + ' tiles with ' + 
+                       totalFeatures.toLocaleString() + ' total features');
+        })
+        .catch(error => {
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('loading-text').innerHTML = 
+                'Error loading data:<br/>' + error.message + 
+                '<br/><small>Check browser console for details</small>';
+            console.error('Error loading tiles:', error);
+        });
+        
+        // Add label layer on top
+        L.tileLayer('https://stamen-tiles-{s}.a.ssl.fastly.net/toner-labels/{z}/{x}/{y}{r}.png', {
+            attribution: 'Map tiles by <a href="http://stamen.com">Stamen Design</a>',
+            subdomains: 'abcd',
+            maxZoom: 20,
+            opacity: 0.8
+        }).addTo(map);
+        
+        // Add legend
+        var legend = L.control({position: 'bottomright'});
+        legend.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'info legend');
+            div.innerHTML = '<strong>Market Kcal Density<br/>Percentile</strong><br/>';
+            
+            var grades = [0, 20, 40, 60, 80];
+            for (var i = 0; i < grades.length; i++) {
+                div.innerHTML +=
+                    '<i style="background:' + getColor(grades[i] + 10) + '"></i> ' +
+                    grades[i] + (grades[i + 1] ? '&ndash;' + grades[i + 1] + '<br/>' : '+');
+            }
+            return div;
+        };
+        legend.addTo(map);
+    </script>
+</body>
+</html>
