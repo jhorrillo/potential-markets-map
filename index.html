@@ -83,7 +83,7 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
     <script>
-        // Initialize map - centered on Old World
+        // Initialize map
         var map = L.map('map', { 
             preferCanvas: true,
             zoomControl: true
@@ -101,11 +101,11 @@
             if (percentile == null || isNaN(percentile)) return 'transparent';
             
             var colors = [
-                [68, 1, 84],      // 0%
-                [59, 82, 139],    // 25%
-                [33, 145, 140],   // 50%
-                [94, 201, 98],    // 75%
-                [253, 231, 37]    // 100%
+                [68, 1, 84],
+                [59, 82, 139],
+                [33, 145, 140],
+                [94, 201, 98],
+                [253, 231, 37]
             ];
             
             var idx = Math.min(Math.floor(percentile / 25), 3);
@@ -120,10 +120,10 @@
             return 'rgb(' + r + ',' + g + ',' + b + ')';
         }
         
-        // Default polygon style
+        // Default polygon style - COLOR BY AREA
         function style(feature) {
             return {
-                fillColor: getColor(feature.properties.pct_kcal),
+                fillColor: getColor(feature.properties.pct_area),
                 fillOpacity: 0.6,
                 color: '#666666',
                 weight: 0.5,
@@ -131,7 +131,7 @@
             };
         }
         
-	// Highlight on hover
+        // Highlight on hover
         function highlightFeature(e) {
             var layer = e.target;
             layer.setStyle({
@@ -154,19 +154,35 @@
             layer.bringToBack();
         }
         
-        // Create popup content
+        // Create popup content - TREAT ZERO AS VALID VALUE
         function createPopup(props) {
-            return '<strong>GRID ID: ' + props.market_grid_id + '</strong><br/>' +
+            // Format percentile (zero is valid)
+            function formatPercentile(value) {
+                if (value === null || value === undefined || isNaN(value)) {
+                    return 'N/A';
+                }
+                return Number(value).toFixed(1);
+            }
+            
+            // Format integer value (zero is valid)
+            function formatInt(value) {
+                if (value === null || value === undefined || isNaN(value)) {
+                    return 'N/A';
+                }
+                return Number(value).toLocaleString();
+            }
+            
+            return '<strong>GRID ID: ' + (props.market_grid_id || 'N/A') + '</strong><br/>' +
                    '<strong>Market Shape Area</strong><br/>' +
-                   '  Percentile: ' + (props.pct_area ? props.pct_area.toFixed(1) : 'N/A') + '<br/>' +
+                   '  Percentile: ' + formatPercentile(props.pct_area) + '<br/>' +
                    '<strong>Market Kcal Density</strong><br/>' +
-                   '  Percentile: ' + (props.pct_kcal ? props.pct_kcal.toFixed(1) : 'N/A') + '<br/>' +
+                   '  Percentile: ' + formatPercentile(props.pct_kcal) + '<br/>' +
                    '<strong>Market Harbors</strong><br/>' +
-                   '  Value: ' + (props.market_harbors || 'N/A') + '<br/>' +
-                   '  Percentile: ' + (props.pct_harbors ? props.pct_harbors.toFixed(1) : 'N/A') + '<br/>' +
+                   '  Value: ' + formatInt(props.market_harbors) + '<br/>' +
+                   '  Percentile: ' + formatPercentile(props.pct_harbors) + '<br/>' +
                    '<strong>Market Population (1800)</strong><br/>' +
-                   '  Value: ' + (props.market_population ? props.market_population.toLocaleString() : 'N/A') + '<br/>' +
-                   '  Percentile: ' + (props.pct_population ? props.pct_population.toFixed(1) : 'N/A');
+                   '  Value: ' + formatInt(props.market_population) + '<br/>' +
+                   '  Percentile: ' + formatPercentile(props.pct_population);
         }
         
         // Bind events to features
@@ -184,7 +200,7 @@
             });
         }
         
-        // List of tile files (7 tiles in 3x3 grid)
+        // List of tile files
         var files = [
             'markets_south.geojson',
             'markets_southeast.geojson',
@@ -220,26 +236,26 @@
                     return data;
                 })
                 .catch(error => {
-                    console.warn('Could not load ' + file + ':', error.message);
-                    return null; // Return null for missing files
+                    console.error('Could not load ' + file + ':', error.message);
+                    document.getElementById('loading-text').innerHTML += 
+                        '<br><small style="color: red;">Error: ' + file + '</small>';
+                    return null;
                 })
         ))
         .then(datasets => {
-            // Hide loading message
             document.getElementById('loading').classList.add('hidden');
             
-            // Filter out null datasets (missing files)
             var validDatasets = datasets.filter(d => d !== null);
             
             if (validDatasets.length === 0) {
-                alert('Error: No data files could be loaded. Please check the console for details.');
+                alert('Error: No data files could be loaded.');
                 return;
             }
             
-            // Add all datasets to map
             validDatasets.forEach(data => {
                 if (data && data.features) {
                     totalFeatures += data.features.length;
+                    
                     L.geoJSON(data, {
                         style: style,
                         onEachFeature: onEachFeature
@@ -253,8 +269,7 @@
         .catch(error => {
             document.getElementById('loading').classList.remove('hidden');
             document.getElementById('loading-text').innerHTML = 
-                'Error loading data:<br/>' + error.message + 
-                '<br/><small>Check browser console for details</small>';
+                'Error loading data:<br/>' + error.message;
             console.error('Error loading tiles:', error);
         });
         
@@ -270,7 +285,7 @@
         var legend = L.control({position: 'bottomright'});
         legend.onAdd = function (map) {
             var div = L.DomUtil.create('div', 'info legend');
-            div.innerHTML = '<strong>Market Kcal Density<br/>Percentile</strong><br/>';
+            div.innerHTML = '<strong>Market Shape Area<br/>Percentile</strong><br/>';
             
             var grades = [0, 20, 40, 60, 80];
             for (var i = 0; i < grades.length; i++) {
