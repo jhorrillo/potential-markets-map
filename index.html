@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Potential Markets, Old World 1800</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root { --panel: #ffffff; --ink: #222; --muted: #6b6b6b; --line: #e3e3e3; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); }
+  #map { position: absolute; inset: 0; }
+  #panel { position: absolute; top: 12px; right: 12px; width: 300px; max-height: calc(100% - 24px); overflow: auto;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.12); font-size: 13px; }
+  #panel section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  #panel section:last-child { border-bottom: 0; }
+  h1 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  select { width: 100%; font: inherit; padding: 4px 6px; }
+  .legend { margin-top: 8px; }
+  .legend div { display: flex; align-items: center; gap: 8px; line-height: 20px; }
+  .legend i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; border: 1px solid rgba(0,0,0,.25); }
+  .bins { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
+  .bins th { font-weight: 600; color: var(--muted); text-align: center; padding: 2px 0 4px; line-height: 1.15; }
+  .bins td { text-align: center; padding: 2px 0; color: var(--ink); }
+  .bins td.sw { width: 22px; text-align: left; }
+  .bins i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; border: 1px solid rgba(0,0,0,.25); vertical-align: middle; }
+  .bins td.lo { color: var(--muted); }
+  .stats table { width: 100%; border-collapse: collapse; }
+  .stats td { padding: 3px 0; vertical-align: top; }
+  .stats td.k { color: var(--muted); width: 48%; padding-right: 6px; }
+  .stats td.v { text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .stats .pct { color: var(--muted); font-size: 11px; margin-left: 4px; white-space: nowrap; }
+  .stats .grp { font-weight: 600; padding-top: 8px; }
+  #mid { font-weight: 600; font-size: 14px; }
+  #state { color: var(--muted); font-size: 11px; }
+  #hint { color: var(--muted); }
+  button { font: inherit; font-size: 12px; padding: 3px 8px; margin-top: 6px; cursor: pointer; }
+  #loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); background: var(--panel); padding: 14px 18px;
+             border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.2); font-size: 13px; z-index: 10; min-width: 220px; }
+  #bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  #bar i { display: block; height: 100%; width: 0; background: #3b528b; transition: width .2s; }
+  [hidden] { display: none !important; }
+  @media (max-width: 640px) { #panel { width: calc(100% - 24px); max-height: 45%; top: auto; bottom: 12px; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="loading">Loading market index<div id="bar"><i></i></div><div id="loadtxt" class="sub"></div></div>
+
+<div id="panel">
+  <section>
+    <h1>Potential markets, Old World 1800</h1>
+    <div class="sub">40 MJ energy budget. Each market is identified by its origin hex. Rest the cursor on a hex to preview its market, click to pin it. Hex outlines appear as you zoom in.</div>
+  </section>
+  <section>
+    <label style="display:flex;align-items:center;gap:6px;color:var(--ink)"><input type="checkbox" id="binsOn" checked> Market clusters by Smith category (paper Map 5)</label>
+    <table class="bins" id="binsLegend"></table>
+  </section>
+  <section>
+    <label for="var">Shade origin hexes by</label>
+    <select id="var"></select>
+    <div class="legend" id="legend"></div>
+  </section>
+  <section class="stats">
+    <div id="mid">No market selected</div>
+    <div id="state"></div>
+    <div id="hint">Rest the cursor on the map.</div>
+    <table id="stats" hidden></table>
+    <button id="clear" hidden>Clear pin</button>
+  </section>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---------- configuration ----------
+  var VARS = [
+    { key: 'pop_1800',     label: 'Population 1800 (cities ≥20k)', fmt: int },
+    { key: 'rf_pred_1800', label: 'Predicted urban population 1800 (RF model)', fmt: int, breaksFrom: 'pop_1800' },
+    { key: 'pop_1700',     label: 'Population 1700',                    fmt: int },
+    { key: 'pop_1500',     label: 'Population 1500',                    fmt: int },
+    { key: 'kcal_density', label: 'Kcal density (kcal/m²/yr)',     fmt: dec1 },
+    { key: 'harbors',      label: 'Harbors',                            fmt: int },
+    { key: 'area_km2',     label: 'Market area (km²)',             fmt: int },
+    { key: 'overlaps',     label: 'Overlapping markets',                fmt: int },
+    { key: 'cities_1800',  label: 'Cities ≥20k in 1800',           fmt: int }
+  ];
+  var VIRIDIS = ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'];
+  var ZERO = '#d9d9d9';
+  // Smith-bin categories, digits = kcal_area_harbors (1 = above threshold). Colors are the
+  // paper's Map 5 sand -> deep green ramp (map5_eight_bins_sand_legend_083126.py, PALETTE=green).
+  var BIN_COLORS = { '0_0_0': '#efede5', '0_0_1': '#e1d5b9', '0_1_0': '#cbba8d', '0_1_1': '#acac77',
+                     '1_0_0': '#86a05c', '1_0_1': '#5fa33c', '1_1_0': '#218b4b', '1_1_1': '#084f28' };
+  var BIN_ORDER = ['1_1_1', '1_1_0', '1_0_1', '1_0_0', '0_1_1', '0_1_0', '0_0_1', '0_0_0'];
+  var STYLE = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
+  var EMPTY = { type: 'FeatureCollection', features: [] };
+  var HOVER_COLOR = '#e31a1c', PIN_COLOR = '#ff7f00', CASE_COLOR = '#ffffff';
+  // Basemap layers to hide: modern roads, rail, bridges, tunnels, runways and their labels add nothing here.
+  var HIDE_SOURCE_LAYERS = { transportation: 1, transportation_name: 1, aeroway: 1 };
+
+  function int(v)  { return v == null ? 'n/a' : Math.round(v).toLocaleString(); }
+  function dec1(v) { return v == null ? 'n/a' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 }); }
+  // scientific notation for large totals: 5.96 × 10¹³
+  var SUP = { '-': '⁻', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  function sci(v) {
+    if (v == null) return 'n/a';
+    if (v === 0) return '0';
+    if (Math.abs(v) < 1e6) return int(v);
+    var e = Math.floor(Math.log10(Math.abs(v))), m = v / Math.pow(10, e);
+    if (Math.abs(m) >= 9.995) { m /= 10; e += 1; }
+    return m.toFixed(2) + ' × 10' + String(e).split('').map(function (c) { return SUP[c] || c; }).join('');
+  }
+  function marketUrl(id) { return 'data/markets/' + id.split('-')[0] + '/' + id + '.json'; }
+  function binLabel(b) {
+    if (!b) return 'Unclassified (no kcal value)';
+    var d = b.split('_');
+    return (d[0] === '1' ? 'High' : 'Low') + ' agricultural potential, ' + (d[1] === '1' ? 'large' : 'small') + ' market, ' +
+           (d[2] === '1' ? 'harbor access' : 'no harbor') + ' (' + b + ')';
+  }
+
+  // ---------- state ----------
+  var origins = null;          // FeatureCollection of origin points: the attribute index
+  var byId = {};               // id -> properties
+  var coord = {};              // id -> [lon, lat] of the origin
+  var sorted = {};             // var key -> sorted numeric array (for percentiles)
+  var breaks = {};             // var key -> quintile breaks over non-zero values
+  var cache = {};              // id -> fetched market Feature
+  var hoverId = null, pinnedId = null, cur = null;
+  var curVar = 'none';
+
+  // ---------- URL hash: MapLibre owns "map=", we add id=, v= and bins= ----------
+  function hashParts() { return location.hash.replace(/^#/, '').split('&').filter(function (s) { return s; }); }
+  function hashGet(k) {
+    var hit = hashParts().filter(function (s) { return s.indexOf(k + '=') === 0; })[0];
+    return hit ? decodeURIComponent(hit.slice(k.length + 1)) : null;
+  }
+  function hashSet(k, v) {
+    var parts = hashParts().filter(function (s) { return s.indexOf(k + '=') !== 0; });
+    if (v != null) parts.push(k + '=' + encodeURIComponent(v));
+    history.replaceState(null, '', parts.length ? '#' + parts.join('&') : location.pathname + location.search);
+  }
+
+  // ---------- map ----------
+  function fail(msg) { var el = document.getElementById('loading'); el.hidden = false; el.innerHTML = msg; }
+  var map;
+  try {
+    if (window.pmtiles) maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
+    map = new maplibregl.Map({
+      container: 'map', style: STYLE, hash: 'map',
+      center: [30, 35], zoom: 2.6, minZoom: 1.5, maxZoom: 11
+    });
+  } catch (e) { fail('This browser cannot draw the map (WebGL unavailable): ' + e.message); throw e; }
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
+  map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
+  map.on('error', function (e) { if (e && e.error) console.warn('map error', e.error.message || e.error); });
+  var mapReady = new Promise(function (res) { map.on('load', res); });
+
+  // ---------- attribute index (origins.geojson) with byte progress ----------
+  function loadOrigins() {
+    return fetch('data/origins.geojson').then(function (r) {
+      if (!r.ok) throw new Error('origins.geojson ' + r.status);
+      var total = +r.headers.get('Content-Length') || 0, got = 0, chunks = [], reader = r.body.getReader();
+      function pump() {
+        return reader.read().then(function (res) {
+          if (res.done) return;
+          chunks.push(res.value); got += res.value.length;
+          var txt = (got / 1e6).toFixed(1) + ' MB';
+          if (total) { document.querySelector('#bar i').style.width = (100 * got / total) + '%'; txt += ' / ' + (total / 1e6).toFixed(1) + ' MB'; }
+          document.getElementById('loadtxt').textContent = txt;
+          return pump();
+        });
+      }
+      return pump().then(function () {
+        var buf = new Uint8Array(got), off = 0;
+        chunks.forEach(function (c) { buf.set(c, off); off += c.length; });
+        return JSON.parse(new TextDecoder().decode(buf));
+      });
+    });
+  }
+
+  // variables ranked for percentiles: the shading variables plus the three kcal totals
+  var PCT_KEYS = VARS.map(function (v) { return v.key; }).concat(['kcal_all', 'kcal_cerleg', 'kcal_bantub']);
+  function indexOrigins() {
+    origins.features.forEach(function (f) { byId[f.properties.id] = f.properties; coord[f.properties.id] = f.geometry.coordinates; });
+    PCT_KEYS.forEach(function (key) {
+      var all = [], nz = [];
+      origins.features.forEach(function (f) {
+        var x = f.properties[key]; if (x == null) return;
+        all.push(x); if (x > 0) nz.push(x);
+      });
+      all.sort(function (a, b) { return a - b; }); nz.sort(function (a, b) { return a - b; });
+      sorted[key] = all;
+      breaks[key] = [0.2, 0.4, 0.6, 0.8].map(function (q) { return nz.length ? nz[Math.min(nz.length - 1, Math.floor(q * nz.length))] : 0; });
+    });
+    // a variable can borrow another's classes so the two maps share one legend (predicted vs actual population)
+    VARS.forEach(function (v) { if (v.breaksFrom) breaks[v.key] = breaks[v.breaksFrom]; });
+  }
+
+  function percentile(key, x) {           // share of markets with value <= x, 0..100
+    var a = sorted[key]; if (!a || x == null) return null;
+    var lo = 0, hi = a.length;
+    while (lo < hi) { var m = (lo + hi) >> 1; if (a[m] <= x) lo = m + 1; else hi = m; }
+    return 100 * lo / a.length;
+  }
+
+  function colorExpr(key) {
+    if (key === 'none') return '#000000';
+    var b = breaks[key];
+    return ['case', ['!', ['has', key]], ZERO, ['<=', ['get', key], 0], ZERO,
+            ['step', ['get', key], VIRIDIS[0], b[0], VIRIDIS[1], b[1], VIRIDIS[2], b[2], VIRIDIS[3], b[3], VIRIDIS[4]]];
+  }
+
+  function renderBinsLegend() {
+    var el = document.getElementById('binsLegend');
+    var h = '<tr><th></th><th>Agricultural<br>potential</th><th>Market<br>area</th><th>Harbor<br>access</th></tr>';
+    BIN_ORDER.forEach(function (b) {
+      var d = b.split('_');
+      h += '<tr><td class="sw"><i style="background:' + BIN_COLORS[b] + '"></i></td>' +
+           ['Agricultural', 'Market', 'Harbor'].map(function (_, i) { return d[i] === '1' ? '<td>High</td>' : '<td class="lo">Low</td>'; }).join('') + '</tr>';
+    });
+    el.innerHTML = h;
+  }
+
+  function renderLegend(key) {
+    var el = document.getElementById('legend');
+    if (key === 'none') { el.innerHTML = '<div class="sub">Hexes are unshaded; their outlines appear from zoom 4.</div>'; return; }
+    var v = VARS.filter(function (x) { return x.key === key; })[0], b = breaks[key];
+    var rows = [['0 or none', ZERO]];
+    var lab = ['< ' + v.fmt(b[0]), v.fmt(b[0]) + ' – ' + v.fmt(b[1]), v.fmt(b[1]) + ' – ' + v.fmt(b[2]),
+               v.fmt(b[2]) + ' – ' + v.fmt(b[3]), '≥ ' + v.fmt(b[3])];
+    lab.forEach(function (t, i) { rows.push([t, VIRIDIS[i]]); });
+    var note = v.breaksFrom
+      ? 'Same classes as ' + VARS.filter(function (x) { return x.key === v.breaksFrom; })[0].label + ', for direct comparison.'
+      : 'Classes are quintiles of the non-zero markets.';
+    el.innerHTML = rows.map(function (r) { return '<div><i style="background:' + r[1] + '"></i>' + r[0] + '</div>'; }).join('') +
+                   '<div class="sub">' + note + '</div>';
+  }
+
+  function setVar(key) {
+    curVar = key; hashSet('v', key === 'none' ? null : key);
+    map.setPaintProperty('hex-fill', 'fill-color', colorExpr(key));
+    map.setPaintProperty('hex-fill', 'fill-opacity', key === 'none' ? 0 : 0.6);
+    renderLegend(key);
+    document.getElementById('var').value = key;
+  }
+
+  // ---------- market polygons ----------
+  function getMarket(id, signal) {
+    if (cache[id]) return Promise.resolve(cache[id]);
+    return fetch(marketUrl(id), { signal: signal }).then(function (r) { if (!r.ok) throw new Error(id + ' ' + r.status); return r.json(); })
+      .then(function (f) {
+        cache[id] = f;
+        // the per-market file carries the kcal totals that origins.geojson omits; fold them into the index
+        Object.keys(f.properties).forEach(function (k) { if (byId[id][k] == null) byId[id][k] = f.properties[k]; });
+        if (cur === id) renderStats(id, pinnedId === id ? 'pinned' : 'hover');
+        return f;
+      });
+  }
+
+  // Hex highlight through feature state on the vector source: no filters, no extra sources.
+  function hexState(id, state) { if (id != null) map.setFeatureState({ source: 'hex', sourceLayer: 'hex', id: id }, state); }
+
+  // Hover is two-stage. While the cursor moves, the only work per hex is a feature-state flip
+  // (cheap). Everything else -- stats panel, polygon fetch, polygon draw -- waits until the cursor
+  // has rested on the same hex for HOVER_DELAY ms, and the timer re-checks that the pointer really
+  // has been still (using the last mousemove timestamp) before doing anything. Any fetch for a hex
+  // the cursor has since left is aborted.
+  var HOVER_DELAY = 250, hoverTimer = null, hoverCtrl = null, lastMove = 0;
+  var hoverShown = null;      // id whose polygon is currently in the 'hover' source
+  var hoverHex = null;        // id currently carrying hover feature-state
+  function setHoverPolygon(f, id) { map.getSource('hover').setData(f || EMPTY); hoverShown = f ? id : null; }
+  function showHover(id) {
+    hoverId = id;
+    clearTimeout(hoverTimer); hoverTimer = null;
+    if (hoverCtrl) { hoverCtrl.abort(); hoverCtrl = null; }
+    if (hoverHex !== id) { hexState(hoverHex, { hover: false }); hexState(id, { hover: true }); hoverHex = id; }
+    if (hoverShown != null && hoverShown !== id) setHoverPolygon(null);
+    if (id == null) { if (!pinnedId) clearStats(); return; }
+    if (!pinnedId) document.getElementById('mid').textContent = 'Market ' + id;
+    var armed = lastMove;
+    hoverTimer = setTimeout(function tick() {
+      if (hoverId !== id) return;
+      if (lastMove !== armed) {                      // pointer moved since arming: wait again
+        armed = lastMove; hoverTimer = setTimeout(tick, HOVER_DELAY); return;
+      }
+      if (!pinnedId) renderStats(id, 'hover');
+      if (cache[id]) { setHoverPolygon(cache[id], id); return; }
+      var ctrl = hoverCtrl = (typeof AbortController === 'function') ? new AbortController() : null;
+      getMarket(id, ctrl && ctrl.signal)
+        .then(function (f) { if (hoverId === id) setHoverPolygon(f, id); })
+        .catch(function (e) { if (e.name !== 'AbortError') console.warn(e); });
+    }, HOVER_DELAY);
+  }
+  function setPinned(id) {
+    if (pinnedId && pinnedId !== id) hexState(pinnedId, { pinned: false });
+    pinnedId = id; hashSet('id', id);
+    document.getElementById('clear').hidden = !id;
+    hexState(id, { pinned: true });
+    if (!id) {
+      map.getSource('pinned').setData(EMPTY);
+      if (hoverId) renderStats(hoverId, 'hover'); else clearStats();
+      return;
+    }
+    renderStats(id, 'pinned');
+    getMarket(id).then(function (f) { if (pinnedId === id) map.getSource('pinned').setData(f); })
+                 .catch(function (e) { console.warn(e); });
+  }
+
+  // ---------- stats panel ----------
+  function clearStats() {
+    cur = null;
+    document.getElementById('mid').textContent = 'No market selected';
+    document.getElementById('state').textContent = '';
+    document.getElementById('hint').hidden = false;
+    document.getElementById('stats').hidden = true;
+  }
+  function row(k, val, key) {
+    var p = key ? percentile(key, byId[cur][key]) : null;
+    // a non-breaking space glues the percentile to the last word of the value, so it never wraps alone
+    return '<tr><td class="k">' + k + '</td><td class="v">' + val + (p == null ? '' : ' <span class="pct">p' + Math.round(p) + '</span>') + '</td></tr>';
+  }
+  function renderStats(id, state) {
+    var p = byId[id]; if (!p) return;
+    cur = id;
+    document.getElementById('mid').textContent = 'Market ' + id;
+    document.getElementById('state').textContent = state === 'pinned'
+      ? 'Pinned. Esc or Clear pin releases it. The address bar link reopens this view.'
+      : 'Hover preview. Click the hex to pin.';
+    document.getElementById('hint').hidden = true;
+    var t = document.getElementById('stats'); t.hidden = false;
+    t.innerHTML =
+      '<tr><td class="k">Smith category</td><td class="v"><i style="display:inline-block;width:10px;height:10px;border:1px solid rgba(0,0,0,.25);border-radius:2px;vertical-align:middle;background:' + (BIN_COLORS[p.bin] || '#fff') + '"></i> ' + binLabel(p.bin) + '</td></tr>' +
+      row('Area', int(p.area_km2) + ' km²', 'area_km2') +
+      row('Overlapping markets', int(p.overlaps), 'overlaps') +
+      '<tr><td class="grp" colspan="2">Population in cities ≥20k</td></tr>' +
+      row('1500', int(p.pop_1500) + ' in ' + int(p.cities_1500) + ' cities', 'pop_1500') +
+      row('1700', int(p.pop_1700) + ' in ' + int(p.cities_1700) + ' cities', 'pop_1700') +
+      row('1800', int(p.pop_1800) + ' in ' + int(p.cities_1800) + ' cities', 'pop_1800') +
+      row('1800, predicted by the RF model', int(p.rf_pred_1800), 'rf_pred_1800') +
+      row('Standardized residual (actual − predicted, log scale)', p.rf_resid_1800 == null ? 'n/a' : (p.rf_resid_1800 > 0 ? '+' : '') + Number(p.rf_resid_1800).toFixed(2)) +
+      '<tr><td class="grp" colspan="2">Food production</td></tr>' +
+      row('Kcal density (kcal/m²/yr)', dec1(p.kcal_density), 'kcal_density') +
+      row('Kcal/yr, all crops', sci(p.kcal_all), 'kcal_all') +
+      row('Kcal/yr, cereals + legumes', sci(p.kcal_cerleg), 'kcal_cerleg') +
+      row('Kcal/yr, bananas + tubers', sci(p.kcal_bantub), 'kcal_bantub') +
+      '<tr><td class="grp" colspan="2">Transport</td></tr>' +
+      row('Harbors', int(p.harbors), 'harbors') +
+      '<tr><td class="k" colspan="2"><span class="pct">p = percentile among all ' + origins.features.length.toLocaleString() + ' markets</span></td></tr>';
+  }
+
+  // ---------- wiring ----------
+  var sel = document.getElementById('var');
+  (function () { var o = document.createElement('option'); o.value = 'none'; o.textContent = 'Nothing (outlines only)'; sel.appendChild(o); })();
+  VARS.forEach(function (v) { var o = document.createElement('option'); o.value = v.key; o.textContent = v.label; sel.appendChild(o); });
+  sel.addEventListener('change', function () { setVar(sel.value); if (cur) renderStats(cur, pinnedId ? 'pinned' : 'hover'); });
+  document.getElementById('clear').addEventListener('click', function () { setPinned(null); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setPinned(null); });
+  var binsOn = document.getElementById('binsOn');
+  binsOn.addEventListener('change', function () {
+    if (map.getLayer('bins-fill')) map.setLayoutProperty('bins-fill', 'visibility', binsOn.checked ? 'visible' : 'none');
+    hashSet('bins', binsOn.checked ? null : '0');
+  });
+  renderBinsLegend();
+
+  // Attribute index download starts now, in parallel with the basemap style; layers are added when both are ready.
+  var originsReady = loadOrigins().then(function (fc) {
+    origins = fc; indexOrigins();
+    document.getElementById('loadtxt').textContent = origins.features.length.toLocaleString() + ' markets indexed';
+    return fc;
+  });
+
+  Promise.all([originsReady, mapReady]).then(function () {
+    document.getElementById('loading').hidden = true;
+    map.getStyle().layers.forEach(function (l) {
+      if (HIDE_SOURCE_LAYERS[l['source-layer']] || /^(road|tunnel|bridge|rail|aeroway)/.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
+    });
+    var firstSymbol = (map.getStyle().layers.filter(function (l) { return l.type === 'symbol'; })[0] || {}).id;
+    var abs = function (p) { return 'pmtiles://' + new URL(p, location.href).href; };
+    var hasPm = !!window.pmtiles;
+
+    // 1. Smith-bin clusters (paper Map 5): the basemap layer under everything else
+    if (hasPm) {
+      map.addSource('bins', { type: 'vector', url: abs('data/smith_bins.pmtiles') });
+      var binMatch = ['match', ['get', 'cat']];
+      Object.keys(BIN_COLORS).forEach(function (b) { binMatch.push(b, BIN_COLORS[b]); });
+      binMatch.push('#ffffff');
+      map.addLayer({ id: 'bins-fill', type: 'fill', source: 'bins', 'source-layer': 'bins',
+        layout: { visibility: hashGet('bins') === '0' ? 'none' : 'visible' },
+        paint: { 'fill-color': binMatch, 'fill-opacity': 0.9, 'fill-antialias': false } }, firstSymbol);
+      if (hashGet('bins') === '0') binsOn.checked = false;
+    }
+
+    // 2. Origin hexes: an (optionally shaded) fill used for hit-testing at every zoom, thin outlines
+    //    that fade in from zoom 4, and a highlight outline driven by feature state (hover / pinned).
+    if (hasPm) {
+      map.addSource('hex', { type: 'vector', url: abs('data/hex.pmtiles'), promoteId: 'id' });
+      map.addLayer({ id: 'hex-fill', type: 'fill', source: 'hex', 'source-layer': 'hex',
+        paint: { 'fill-color': colorExpr(curVar), 'fill-opacity': curVar === 'none' ? 0 : 0.6, 'fill-antialias': false } }, firstSymbol);
+    }
+    map.addSource('hover', { type: 'geojson', data: EMPTY });
+    map.addSource('pinned', { type: 'geojson', data: EMPTY });
+    // market polygons: translucent fill + a colored outline over a white casing so it reads on sand and deep green alike
+    map.addLayer({ id: 'pinned-fill', type: 'fill', source: 'pinned', paint: { 'fill-color': PIN_COLOR, 'fill-opacity': 0.3 } }, firstSymbol);
+    map.addLayer({ id: 'pinned-case', type: 'line', source: 'pinned', paint: { 'line-color': CASE_COLOR, 'line-width': 5, 'line-opacity': 0.9 } }, firstSymbol);
+    map.addLayer({ id: 'pinned-line', type: 'line', source: 'pinned', paint: { 'line-color': PIN_COLOR, 'line-width': 2.5 } }, firstSymbol);
+    map.addLayer({ id: 'hover-fill', type: 'fill', source: 'hover', paint: { 'fill-color': HOVER_COLOR, 'fill-opacity': 0.3 } }, firstSymbol);
+    map.addLayer({ id: 'hover-case', type: 'line', source: 'hover', paint: { 'line-color': CASE_COLOR, 'line-width': 5, 'line-opacity': 0.9 } }, firstSymbol);
+    map.addLayer({ id: 'hover-line', type: 'line', source: 'hover', paint: { 'line-color': HOVER_COLOR, 'line-width': 2.5 } }, firstSymbol);
+    if (hasPm) {
+      map.addLayer({ id: 'hex-line', type: 'line', source: 'hex', 'source-layer': 'hex', minzoom: 4,
+        paint: { 'line-color': '#000000',
+                 'line-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0, 5, 0.12, 7, 0.22, 10, 0.3],
+                 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.4, 8, 0.8, 10, 1.2] } }, firstSymbol);
+      var hlOpacity = ['case', ['boolean', ['feature-state', 'pinned'], false], 1, ['boolean', ['feature-state', 'hover'], false], 1, 0];
+      map.addLayer({ id: 'hex-highlight-case', type: 'line', source: 'hex', 'source-layer': 'hex',
+        paint: { 'line-color': CASE_COLOR, 'line-opacity': ['*', 0.9, hlOpacity],
+                 'line-width': ['interpolate', ['linear'], ['zoom'], 2, 4, 6, 5.5, 10, 6.5] } }, firstSymbol);
+      map.addLayer({ id: 'hex-highlight', type: 'line', source: 'hex', 'source-layer': 'hex',
+        paint: { 'line-color': ['case', ['boolean', ['feature-state', 'pinned'], false], PIN_COLOR, HOVER_COLOR],
+                 'line-opacity': hlOpacity,
+                 'line-width': ['interpolate', ['linear'], ['zoom'], 2, 1.8, 6, 2.8, 10, 3.5] } }, firstSymbol);
+    }
+
+    var v = hashGet('v'); if (v && (v === 'none' || VARS.some(function (x) { return x.key === v; }))) curVar = v;
+    setVar(curVar);
+    var id = hashGet('id');
+    if (id && byId[id]) {
+      setPinned(id);
+      if (!/(^#|&)map=/.test(location.hash)) map.jumpTo({ center: coord[id], zoom: 4 });
+    }
+
+    map.on('mousemove', function (e) { lastMove = e.originalEvent ? e.originalEvent.timeStamp : Date.now(); });
+    if (hasPm) {
+      map.on('mousemove', 'hex-fill', function (e) {
+        map.getCanvas().style.cursor = 'pointer';
+        var hid = e.features[0].properties.id;
+        if (hid !== hoverId) showHover(hid);
+      });
+      map.on('mouseleave', 'hex-fill', function () { map.getCanvas().style.cursor = ''; showHover(null); });
+      map.on('click', function (e) {
+        var hits = map.queryRenderedFeatures(e.point, { layers: ['hex-fill'] });
+        if (hits.length) { var cid = hits[0].properties.id; setPinned(pinnedId === cid ? null : cid); }
+        else if (pinnedId) setPinned(null);
+      });
+    }
+  }).catch(function (e) {
+    fail('Could not load data: ' + e.message);
+  });
+})();
+</script>
+</body>
+</html>
